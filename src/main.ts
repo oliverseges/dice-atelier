@@ -23,6 +23,11 @@ const warning = $('storage-warning');
 const labelSelect = $('label-style') as HTMLSelectElement;
 const faceMap = $('face-map') as HTMLTextAreaElement;
 const customFaces = $('custom-faces') as HTMLDetailsElement;
+const appShell = document.querySelector<HTMLElement>('.app-shell')!;
+const resultPanel = $('results');
+const resultDetails = $('result-details') as HTMLDetailsElement;
+const resultChips = $('result-chips');
+const resultTotal = $('result-total');
 
 const popularShapes: ShapeId[] = ['d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'];
 const otherShapes: ShapeId[] = ['d2', 'd3', 'd5', 'd7', 'd14', 'd16', 'd24', 'd30'];
@@ -40,8 +45,47 @@ let storageBlocked = false;
 let rolling = false;
 let scene: DiceScene | null = null;
 let toastTimer = 0;
+let resultTimer = 0;
 const quickDice = new Map<ShapeId, DieConfig>();
 let lastSnapshot: HandSnapshot | null = null;
+type FlickImpulse = { x: number; z: number; spin: number };
+
+function snapshotHand(): HandSnapshot {
+  return structuredClone({
+    groups: hand,
+    multiplier: Number(($('hand-multiplier') as HTMLSelectElement).value),
+    offset: Number(($('hand-offset') as HTMLSelectElement).value),
+  });
+}
+
+function stageCurrentHand(): void {
+  if (rolling || appShell.dataset.view === 'design') return;
+  lastSnapshot = null;
+  scene?.stageHand(snapshotHand());
+}
+
+function previewCurrentDie(): void {
+  if (!rolling && appShell.dataset.view === 'design') scene?.showDie(currentDie);
+}
+
+function showResults(): void {
+  resultPanel.hidden = false;
+  resultPanel.dataset.state = 'active';
+  resultPanel.classList.remove('is-quiet');
+  window.clearTimeout(resultTimer);
+  resultTimer = window.setTimeout(() => {
+    resultPanel.dataset.state = 'quiet';
+    resultPanel.classList.add('is-quiet');
+  }, 6500);
+}
+
+function showPendingResults(): void {
+  resultDetails.open = false;
+  resultChips.replaceChildren();
+  resultTotal.textContent = 'Rolling…';
+  $('result-content').replaceChildren();
+  showResults();
+}
 
 function showToast(message: string): void {
   toast.textContent = message;
@@ -185,7 +229,7 @@ function fillEditor(): void {
   $('size-output').textContent = `${Math.round(currentDie.size * 100)}%`;
   drawShapeButtons();
   renderCollection();
-  if (!rolling) scene?.showDie(currentDie);
+  previewCurrentDie();
   updateHandControls();
 }
 
@@ -216,7 +260,7 @@ function updateDie(update: (die: DieConfig) => DieConfig, redraw = true): void {
   if (redraw) {
     drawShapeButtons();
     renderCollection();
-    if (!rolling) scene?.showDie(currentDie);
+    previewCurrentDie();
   }
 }
 
@@ -285,6 +329,7 @@ function renderHand(): void {
     handList.append(card);
   }
   updateHandControls();
+  stageCurrentHand();
 }
 
 function makeModifierSelect(label: string, value: number, options: string[], callback: (value: string) => void): HTMLElement {
@@ -353,6 +398,9 @@ function formatNumber(number: number): string {
 function renderResults(snapshot: HandSnapshot, faces: FaceDefinition[][]): void {
   const results = faces.map((group, index) => group.map(face => ({ ...face, dieName: snapshot.groups[index].die.name })));
   const breakdown = computeBreakdown(snapshot.groups, snapshot.multiplier, snapshot.offset, results);
+  resultDetails.open = false;
+  resultChips.replaceChildren();
+  resultTotal.textContent = `Total ${formatNumber(breakdown.total)}`;
   const content = $('result-content');
   content.replaceChildren();
   const groupList = document.createElement('div');
@@ -375,6 +423,7 @@ function renderResults(snapshot: HandSnapshot, faces: FaceDefinition[][]): void 
       pill.textContent = `${face.label} → ${formatNumber(face.score)}`;
       pill.title = `Face label ${face.label}; scoring value ${formatNumber(face.score)}`;
       pills.append(pill);
+      resultChips.append(pill.cloneNode(true));
     });
     const math = document.createElement('div');
     math.className = 'group-math';
@@ -394,9 +443,13 @@ function renderResults(snapshot: HandSnapshot, faces: FaceDefinition[][]): void 
   content.append(groupList);
   $('result-title').textContent = 'The table has spoken.';
   $('result-status').textContent = 'RESTED · ACTUAL FACES';
+  showResults();
 }
 
 function showCocked(): void {
+  resultDetails.open = false;
+  resultChips.replaceChildren();
+  resultTotal.textContent = 'No score';
   const content = $('result-content');
   content.replaceChildren();
   const message = document.createElement('p');
@@ -405,23 +458,21 @@ function showCocked(): void {
   content.append(message);
   $('result-title').textContent = 'A cocked throw.';
   $('result-status').textContent = 'UNSETTLED · NO SCORE';
+  showResults();
 }
 
-function throwHand(): void {
+function throwHand(impulse?: FlickImpulse): void {
   if (!scene || !hand.length || rolling) {
     if (!scene) showToast('3D rendering is unavailable on this device.');
     return;
   }
-  const snapshot = structuredClone({
-    groups: hand,
-    multiplier: Number(($('hand-multiplier') as HTMLSelectElement).value),
-    offset: Number(($('hand-offset') as HTMLSelectElement).value),
-  }) as HandSnapshot;
+  const snapshot = snapshotHand();
   lastSnapshot = snapshot;
   rolling = true;
   rollOverlay.hidden = false;
   $('roll-status').textContent = 'The dice are finding their feet…';
-  $('throw-button').setAttribute('disabled', '');
+  updateHandControls();
+  showPendingResults();
   $('result-title').textContent = 'The dice are in motion.';
   $('result-status').textContent = 'READING THE TABLE…';
   try {
@@ -431,19 +482,24 @@ function throwHand(): void {
       updateHandControls();
       if (result.status === 'cocked') showCocked();
       else renderResults(snapshot, result.results);
-    });
+    }, impulse);
   } catch (error) {
     rolling = false;
     rollOverlay.hidden = true;
     updateHandControls();
     const message = error instanceof Error ? error.message : 'The physics simulation could not start.';
     showToast(message);
+    resultTotal.textContent = 'Throw failed';
     $('result-title').textContent = 'The table is quiet.';
     $('result-status').textContent = 'THROW FAILED';
   }
 }
 
 function bindEvents(): void {
+  resultPanel.addEventListener('pointerenter', showResults);
+  resultPanel.addEventListener('focusin', showResults);
+  resultPanel.addEventListener('pointerdown', showResults);
+  resultDetails.querySelector('summary')!.addEventListener('click', showResults);
   $('new-die').addEventListener('click', () => {
     currentDie = createDie('d6');
     selectedId = null;
@@ -488,7 +544,7 @@ function bindEvents(): void {
     }
     customFaces.open = style === 'custom';
     setFaceEditor();
-    if (!rolling) scene?.showDie(currentDie);
+    previewCurrentDie();
     renderCollection();
   });
   $('apply-face-map').addEventListener('click', () => {
@@ -575,10 +631,18 @@ function bindEvents(): void {
     $('result-title').textContent = 'A moment before the roll';
     $('result-status').textContent = 'READY WHEN YOU ARE';
     $('result-content').innerHTML = '<span class="empty-result">Add a die to your hand, then let the table decide.</span>';
+    window.clearTimeout(resultTimer);
+    resultPanel.hidden = true;
   });
-  $('throw-button').addEventListener('click', throwHand);
-  $('hand-multiplier').addEventListener('change', () => updateHandControls());
-  $('hand-offset').addEventListener('change', () => updateHandControls());
+  $('throw-button').addEventListener('click', () => throwHand());
+  $('hand-multiplier').addEventListener('change', () => {
+    updateHandControls();
+    stageCurrentHand();
+  });
+  $('hand-offset').addEventListener('change', () => {
+    updateHandControls();
+    stageCurrentHand();
+  });
   $('quick-die').addEventListener('change', () => updateHandControls());
   $('quick-quantity').addEventListener('input', () => updateHandControls());
   $('theme-select').addEventListener('change', event => {
@@ -597,7 +661,6 @@ function bindEvents(): void {
       item.setAttribute('aria-pressed', String(active));
     });
   }));
-  const appShell = document.querySelector<HTMLElement>('.app-shell')!;
   const setView = (view: 'play' | 'design') => {
     appShell.dataset.view = view;
     $('design-toggle').setAttribute('aria-label', view === 'play' ? 'Move left to the design table' : 'Return to the throw table');
@@ -605,6 +668,8 @@ function bindEvents(): void {
     $('design-toggle').querySelector('span')!.textContent = view === 'play' ? '‹' : '›';
     $('design-toggle').setAttribute('aria-pressed', String(view === 'design'));
     scene?.setView(view);
+    if (view === 'design') previewCurrentDie();
+    else stageCurrentHand();
   };
   $('design-toggle').addEventListener('click', () => setView(appShell.dataset.view === 'design' ? 'play' : 'design'));
   $('close-design').addEventListener('click', () => setView('play'));
@@ -619,7 +684,7 @@ function initialize(): void {
   bindEvents();
   try {
     scene = new DiceScene(stage);
-    scene.showDie(currentDie);
+    scene.setTableFlickCallback(impulse => throwHand(impulse));
     scene.setDragCallbacks(() => {
       if (!lastSnapshot) return false;
       rolling = true;
@@ -627,6 +692,7 @@ function initialize(): void {
       $('roll-status').textContent = 'A little flick, and away…';
       $('result-title').textContent = 'The dice are in motion.';
       $('result-status').textContent = 'READING THE TABLE…';
+      showPendingResults();
       updateHandControls();
       return true;
     }, result => {

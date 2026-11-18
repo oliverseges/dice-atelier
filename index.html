@@ -9,21 +9,12 @@
     <title>Dice Atelier — Roll your own story</title>
   </head>
   <body>
-    <div class="app-shell">
+    <div class="app-shell" data-view="play">
       <header class="topbar">
         <a class="brand" href="/" aria-label="Dice Atelier home">
           <span class="brand-mark" aria-hidden="true">✳</span>
-          <span><strong>DICE ATELIER</strong><small>ROLL YOUR OWN STORY</small></span>
+          <span><strong>DICE ATELIER</strong></span>
         </a>
-        <div class="topbar-actions">
-          <span class="saved-note"><span class="status-dot"></span> YOUR COLLECTION, LOCALLY SAVED</span>
-          <label class="theme-select-label" for="theme-select">Atelier</label>
-          <select id="theme-select" aria-label="Choose interface theme">
-            <option value="ivory">Ivory &amp; brass</option>
-            <option value="gaming">Studio color</option>
-            <option value="fantasy">Forest atelier</option>
-          </select>
-        </div>
       </header>
 
       <main class="workspace">
@@ -93,16 +84,27 @@
             <button id="delete-die" class="delete-button" hidden>Delete this die</button>
           </div>
           <p id="storage-warning" class="warning-message" role="status" hidden></p>
+          <details class="advanced-controls table-settings">
+            <summary>Table settings</summary>
+            <label class="field-label" for="theme-select">Interface theme</label>
+            <select id="theme-select" aria-label="Choose interface theme">
+              <option value="ivory">Ivory &amp; brass</option>
+              <option value="gaming">Studio color</option>
+              <option value="fantasy">Forest atelier</option>
+            </select>
+            <p class="field-label">Throwing surface</p>
+            <div class="surface-switch" role="group" aria-label="Throwing surface">
+              <button class="surface-button active" data-surface="cloud" aria-pressed="true">Cloud</button>
+              <button class="surface-button" data-surface="table" aria-pressed="false">Table</button>
+            </div>
+          </details>
+          <details class="about-note"><summary>How the oddities roll</summary><p>d24 and d30 use 12- and 15-sided bipyramids; smaller oddities repeat outcomes on convex solids. d100 rolls two physical d10s. Physical probabilities are not calibrated and may be biased. Face relief is rendered, not carved geometry.</p></details>
         </aside>
 
         <section class="stage-column" aria-label="Dice table">
           <button id="design-toggle" class="view-toggle" aria-label="Move left to the design table"><span aria-hidden="true">‹</span><small>DESIGN</small></button>
           <div class="stage-toolbar">
             <div class="stage-title"><span class="eyebrow">THE TABLE</span><strong id="stage-caption">Your next story starts here.</strong></div>
-            <div class="surface-switch" role="group" aria-label="Throwing surface">
-              <button class="surface-button active" data-surface="cloud" aria-pressed="true">Cloud</button>
-              <button class="surface-button" data-surface="table" aria-pressed="false">Table</button>
-            </div>
           </div>
           <div id="stage" class="stage surface-cloud">
             <div id="scene-fallback" class="scene-fallback" hidden>
@@ -111,20 +113,23 @@
             <div class="stage-caption" aria-hidden="true"><span>ATELIER NO. 01</span><span>✦ &nbsp; A GOOD ROLL IS A SMALL ADVENTURE</span></div>
             <div id="roll-overlay" class="roll-overlay" hidden><span class="roll-spinner"></span><span id="roll-status">The dice are finding their feet…</span></div>
           </div>
-          <div class="stage-bottom">
-            <span id="hand-summary">Your hand is waiting for its first die.</span>
-            <button id="clear-hand" class="text-button" disabled>Clear hand</button>
-          </div>
-          <section class="result-panel" aria-live="polite" aria-atomic="false">
-            <div class="result-heading"><div><p class="eyebrow">THE LAST THROW</p><h2 id="result-title">A moment before the roll</h2></div><span id="result-status" class="result-status">READY WHEN YOU ARE</span></div>
-            <div id="result-content" class="result-content"><span class="empty-result">Add a die to your hand, then let the table decide.</span></div>
+          <section id="results" class="result-panel" data-state="idle" aria-label="Last throw results" tabindex="0" aria-live="polite" aria-atomic="false" hidden>
+            <details id="result-details" class="result-details">
+              <summary>
+                <span class="result-overview"><strong id="result-total">Ready to roll</strong><span class="result-expand">Breakdown <span aria-hidden="true">⌄</span></span></span>
+                <span id="result-chips" class="result-chips" aria-label="Rolled face labels and scores"></span>
+              </summary>
+              <div class="result-heading"><div><p class="eyebrow">THE LAST THROW</p><h2 id="result-title">A moment before the roll</h2></div><span id="result-status" class="result-status">READY WHEN YOU ARE</span></div>
+              <div id="result-content" class="result-content"><span class="empty-result">Add a die to your hand, then let the table decide.</span></div>
+            </details>
           </section>
         </section>
 
         <aside class="right-panel panel" aria-label="Your hand">
-          <div class="panel-heading hand-heading"><div><p class="eyebrow">THE NEXT THROW</p><h2>Make a hand.</h2></div><span id="hand-count" class="hand-count">0 / 30</span></div>
+          <div class="panel-heading hand-heading"><h2>Your hand</h2><span id="hand-count" class="hand-count">0 / 30</span><button id="clear-hand" class="text-button" disabled>Clear hand</button></div>
+          <span id="hand-summary" class="visually-hidden">Your hand is waiting for its first die.</span>
           <div class="quick-picker">
-            <label class="field-label" for="quick-die">Choose a die</label>
+            <label class="visually-hidden" for="quick-die">Choose a die</label>
             <select id="quick-die" aria-label="Choose a die for your hand">
               <optgroup label="Classic dice">
                 <option value="default:d4">d4 · tetrahedron</option>
@@ -148,25 +153,20 @@
               <optgroup id="saved-die-options" label="Your saved dice"></optgroup>
             </select>
             <div class="quick-add-row">
-              <label class="field-label" for="quick-quantity">Quantity</label>
+              <label class="visually-hidden" for="quick-quantity">Quantity</label>
               <input id="quick-quantity" type="number" min="1" max="30" value="1" />
             </div>
+            <button id="add-to-hand" class="secondary-button" aria-label="Add selected dice to hand">Add</button>
           </div>
           <div id="hand-list" class="hand-list"></div>
-          <button id="add-to-hand" class="secondary-button"><span>＋</span> Add to hand</button>
-          <div class="surface-switch floating-surface-switch" role="group" aria-label="Throwing surface">
-            <button class="surface-button active" data-surface="cloud" aria-pressed="true">Cloud</button>
-            <button class="surface-button" data-surface="table" aria-pressed="false">Table</button>
-          </div>
-          <div class="modifier-card">
-            <div class="section-label"><span>HAND MODIFIER</span><span class="tiny-note">AFTER GROUPS</span></div>
+          <details class="modifier-card">
+            <summary>Hand modifier</summary>
             <div class="modifier-row"><label for="hand-multiplier">Multiply</label><select id="hand-multiplier"><option value="1">× 1</option><option value="2">× 2</option><option value="4">× 4</option></select></div>
             <div class="modifier-row"><label for="hand-offset">Then add</label><select id="hand-offset"><option value="0">+ 0</option><option value="2">+ 2</option><option value="-1">− 1</option></select></div>
-          </div>
-          <div class="formula-card"><span class="formula-icon">ƒ</span><p><strong>Every group tells its own story.</strong> Multiply a group's subtotal, add its offset once, then apply your hand modifier.</p></div>
-          <button id="throw-button" class="throw-button" disabled><span>Throw the hand</span><span class="throw-arrow">↗</span></button>
-          <p class="physics-note"><span>◉</span> Results come from the resting faces. After a throw, drag a die to flick it again.</p>
-          <details class="about-note"><summary>How the oddities roll</summary><p>d24 and d30 use 12- and 15-sided bipyramids; smaller oddities repeat outcomes on convex solids. d100 rolls two physical d10s. See the README for representation and fairness notes.</p></details>
+            <p class="helper-text">Group subtotal × multiplier + offset, then apply the hand modifier.</p>
+          </details>
+          <button id="throw-button" class="throw-button" disabled><span>Throw</span><span class="throw-arrow" aria-hidden="true">↗</span></button>
+          <p class="physics-note">Or drag the table to flick.</p>
         </aside>
       </main>
       <div id="toast" class="toast" role="status" aria-live="polite"></div>

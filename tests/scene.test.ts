@@ -23,7 +23,11 @@ vi.mock('three', async importOriginal => {
     readonly dispose = vi.fn();
   }
 
-  return { ...actual, WebGLRenderer: MockRenderer };
+  class MockPMREMGenerator {
+    fromEquirectangular() { return new actual.WebGLRenderTarget(16, 16); }
+    dispose() {}
+  }
+  return { ...actual, WebGLRenderer: MockRenderer, PMREMGenerator: MockPMREMGenerator };
 });
 
 interface MockRenderer {
@@ -58,6 +62,7 @@ interface SceneInternals {
 const scenes: DiceScene[] = [];
 const observers: MockResizeObserver[] = [];
 const renderedCanvasText: string[] = [];
+const renderedCanvasInk: Array<string | CanvasGradient | CanvasPattern> = [];
 let reduceMotion = true;
 let frameCallbacks: Map<number, FrameRequestCallback> | undefined;
 let nextFrameId: number;
@@ -171,7 +176,10 @@ function canvasContext(): CanvasRenderingContext2D {
     moveTo: vi.fn(),
     bezierCurveTo: vi.fn(),
     clearRect: vi.fn(),
-    fillText: vi.fn((text: string) => { renderedCanvasText.push(text); }),
+    fillText: vi.fn(function (this: CanvasRenderingContext2D, text: string) {
+      renderedCanvasText.push(text);
+      renderedCanvasInk.push(this.fillStyle);
+    }),
     strokeText: vi.fn((text: string) => { renderedCanvasText.push(text); }),
   } as unknown as CanvasRenderingContext2D;
 }
@@ -187,6 +195,7 @@ function useDeterministicRandom(seed = 17): void {
 beforeEach(() => {
   observers.length = 0;
   renderedCanvasText.length = 0;
+  renderedCanvasInk.length = 0;
   reduceMotion = true;
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
@@ -210,6 +219,16 @@ afterEach(() => {
 });
 
 describe('DiceScene browser lifecycle and presentation', () => {
+  it('uses light inlay on dark bodies and dark ink on light bodies for every face treatment', () => {
+    const scene = createScene();
+    for (const treatment of ['gilded', 'engraved', 'embossed'] as const) {
+      scene.showDie(createDie('d6', { color: '#112233', treatment }));
+      expect(renderedCanvasInk.at(-1)).toBe('#fff1cc');
+      scene.showDie(createDie('d6', { color: '#eee8d8', treatment }));
+      expect(renderedCanvasInk.at(-1)).toBe('#211d17');
+    }
+  });
+
   it('creates a responsive canvas, replaces the selected surface, and switches the preview between play and design', () => {
     const scene = createScene(430, 700);
     const state = sceneState(scene);
@@ -219,7 +238,7 @@ describe('DiceScene browser lifecycle and presentation', () => {
     expect(canvas.getAttribute('aria-hidden')).toBe('true');
     expect(state.renderer.setSize).toHaveBeenLastCalledWith(430, 700, false);
     expect(observers[0].observe).toHaveBeenCalledTimes(1);
-    expect(state.camera.aspect).toBeCloseTo(430 / 700);
+    expect(state.camera.aspect).toBeCloseTo(430 / 330);
     expect(state.scene.getObjectByName('throwing-surface')).toBeTruthy();
 
     const host = canvas.parentElement!;
@@ -227,7 +246,7 @@ describe('DiceScene browser lifecycle and presentation', () => {
     Object.defineProperty(host, 'clientHeight', { configurable: true, value: 330 });
     observers[0].trigger();
     expect(state.renderer.setSize).toHaveBeenLastCalledWith(390, 330, false);
-    expect(state.camera.aspect).toBeCloseTo(390 / 330);
+    expect(state.camera.aspect).toBeCloseTo(390);
 
     scene.setView('play');
     scene.setView('design');
@@ -243,7 +262,7 @@ describe('DiceScene browser lifecycle and presentation', () => {
     expect(state.cameraTarget.x).toBe(0);
     Object.defineProperty(host, 'clientWidth', { configurable: true, value: 390 });
     observers[0].trigger();
-    expect(state.cameraTarget.x).toBe(1.1);
+    expect(state.cameraTarget.x).toBe(0);
 
     const cloud = state.scene.getObjectByName('throwing-surface') as THREE.Mesh;
     const cloudMaterial = cloud.material as THREE.MeshStandardMaterial;
@@ -272,9 +291,9 @@ describe('DiceScene browser lifecycle and presentation', () => {
     expect(preview.scale.x).toBe(0.56);
     expect(state.camera.position.y).toBe(11.5);
     scene.setView('play');
-    expect(state.cameraTarget.x).toBe(1.1);
-    expect(preview.position.x).toBe(0);
-    expect(preview.scale.x).toBe(0.78);
+    expect(state.cameraTarget.x).toBe(0);
+    expect(state.previewDie).toBeNull();
+    expect(state.scene.children).not.toContain(preview);
   });
 
   it('renders material and face-treatment choices in the active preview', () => {
@@ -282,10 +301,10 @@ describe('DiceScene browser lifecycle and presentation', () => {
     const state = sceneState(scene);
 
     for (const [material, expectedMetalness, expectedRoughness, expectedCoat] of [
-      ['porcelain', 0.06, 0.3, 0.3],
-      ['satin', 0.82, 0.23, 0.3],
+      ['porcelain', 0.06, 0.24, 0.8],
+      ['satin', 0.82, 0.23, 0.8],
       ['enamel', 0.32, 0.2, 1],
-      ['crystal', 0.06, 0.3, 0.72],
+      ['crystal', 0.06, 0.24, 0.72],
     ] as const) {
       scene.showDie(createDie('d6', { material }));
       const shell = state.previewDie!.children.at(-1) as THREE.Mesh;
@@ -559,6 +578,8 @@ describe('DiceScene physical outcomes', () => {
     const entry = sceneState(scene).dice[0];
     expect(result).toMatchObject({ status: 'settled' });
     const bottomFace = restingFaceIndex(faceNormals('d4'), entry.body.quaternion, true);
+    expect(entry.mesh.children.filter(child =>
+      child instanceof THREE.Mesh && child.geometry instanceof THREE.PlaneGeometry)).toHaveLength(12);
     expect(bottomFace).not.toBeNull();
     expect(result).toEqual({
       status: 'settled',
@@ -876,14 +897,137 @@ describe('DiceScene physical outcomes', () => {
 });
 
 describe('DiceScene pointer workflows', () => {
-  it('does not capture table gestures before a throw or while the design table is active', () => {
+  it('settles both physical percentile bodies repeatedly without synthesizing outcomes', () => {
+    for (const seed of [1, 17, 29, 51, 83, 127]) {
+      useDeterministicRandom(seed);
+      const scene = createScene(1440, 900);
+      const result = vi.fn();
+      const die = createDie('d100');
+      scene.throw(snapshot(die), result);
+      const state = sceneState(scene);
+      expect(state.dice).toHaveLength(2);
+      expect(result, `seed ${seed}`).toHaveBeenCalledWith(expect.objectContaining({ status: 'settled' }));
+      const tens = restingFaceIndex(faceNormals('d10'), state.dice[0].body.quaternion);
+      const units = restingFaceIndex(faceNormals('d10'), state.dice[1].body.quaternion);
+      expect(tens).not.toBeNull();
+      expect(units).not.toBeNull();
+      expect(result.mock.calls[0][0].results).toEqual([[{
+        ...die.faces[tens! * 10 + units!], dieName: die.name,
+      }]]);
+    }
+  });
+
+  it('starts a directional table flick before the first throw and ignores taps or cancelled gestures', () => {
+    const scene = createScene();
+    const canvas = sceneState(scene).renderer.domElement;
+    setPointerBounds(canvas);
+    const flick = vi.fn();
+    scene.setTableFlickCallback(flick);
+    vi.spyOn(performance, 'now').mockReturnValue(100);
+    canvas.dispatchEvent(pointerEvent('pointerdown', 1, 200, 500));
+    canvas.dispatchEvent(pointerEvent('pointerdown', 99, 500, 100));
+    expect(canvas.setPointerCapture).toHaveBeenCalledOnce();
+    canvas.dispatchEvent(pointerEvent('pointerup', 99, 500, 100));
+    expect(flick).not.toHaveBeenCalled();
+    canvas.dispatchEvent(pointerEvent('pointerup', 1, 500, 100));
+    expect(flick).toHaveBeenCalledWith({ x: 6, z: -6, spin: 700 / 60 });
+    expect(canvas.hasPointerCapture(1)).toBe(false);
+    canvas.dispatchEvent(pointerEvent('pointerdown', 2, 200, 500));
+    canvas.dispatchEvent(pointerEvent('pointerup', 2, 202, 501));
+    expect(flick).toHaveBeenCalledOnce();
+    canvas.dispatchEvent(pointerEvent('pointerdown', 3, 200, 500));
+    canvas.releasePointerCapture(3);
+    canvas.dispatchEvent(pointerEvent('pointercancel', 3, 500, 100));
+    canvas.dispatchEvent(pointerEvent('pointerup', 3, 500, 100));
+    expect(flick).toHaveBeenCalledOnce();
+  });
+
+  it('shows every staged hand body without producing a score, then uses a flick impulse in real physics', () => {
+    reduceMotion = false;
+    useDeterministicRandom();
+    installAnimationFrames();
+    const scene = createScene(1440, 900);
+    const state = sceneState(scene);
+    const hand: HandSnapshot = {
+      groups: [
+        { die: createDie('d20'), quantity: 3, multiplier: 1, offset: 0 },
+        { die: createDie('d6'), quantity: 2, multiplier: 1, offset: 0 },
+      ], multiplier: 1, offset: 0,
+    };
+    scene.stageHand(hand);
+    expect(state.dice).toHaveLength(5);
+    expect(frameCallbacks?.size).toBe(0);
+    for (const entry of state.dice) {
+      expect(entry.body.sleepState).toBe(CANNON.Body.SLEEPING);
+      expect(entry.mesh.position.y).toBeGreaterThan(0.25);
+      expect(entry.mesh.position.y).toBeLessThan(0.85);
+      const screen = entry.mesh.position.clone().project(state.camera);
+      expect(Math.abs(screen.x)).toBeLessThan(0.9);
+      expect(Math.abs(screen.y)).toBeLessThan(0.9);
+    }
+    const canvas = state.renderer.domElement;
+    setPointerBounds(canvas);
+    const flick = vi.fn();
+    scene.setTableFlickCallback(flick);
+    const center = screenCenter(state, canvas);
+    canvas.dispatchEvent(pointerEvent('pointerdown', 1, center.x, center.y));
+    canvas.dispatchEvent(pointerEvent('pointerup', 1, center.x + 100, center.y - 100));
+    expect(flick).toHaveBeenCalledOnce();
+    const result = vi.fn();
+    scene.throw(hand, result, { x: 2, z: -3, spin: 5 });
+    expect(state.dice).toHaveLength(5);
+    for (const entry of state.dice) {
+      expect(entry.body.velocity.toArray()).toEqual([2, 3.2, -3]);
+      expect(entry.body.angularVelocity.toArray()).toEqual([-6, 5, -4]);
+    }
+    expect(result).not.toHaveBeenCalled();
+  });
+
+  it('ignores a table flick without a registered handler and releases lost captures safely', () => {
+    const scene = createScene();
+    const canvas = sceneState(scene).renderer.domElement;
+    setPointerBounds(canvas);
+    canvas.dispatchEvent(pointerEvent('pointerdown', 1, 400, 500));
+    canvas.releasePointerCapture(1);
+    expect(() => canvas.dispatchEvent(pointerEvent('pointerup', 1, 300, 100))).not.toThrow();
+    window.dispatchEvent(new Event('resize'));
+    expect(sceneState(scene).renderer.setSize).toHaveBeenLastCalledWith(800, 600, false);
+  });
+
+  it('keeps every mixed-hand body inside the mobile camera frame after real physics settles', () => {
+    useDeterministicRandom();
+    const scene = createScene(390, 844);
+    const state = sceneState(scene);
+    const hand: HandSnapshot = {
+      groups: [
+        { die: createDie('d20'), quantity: 3, multiplier: 1, offset: 0 },
+        { die: createDie('d6'), quantity: 2, multiplier: 1, offset: 0 },
+      ], multiplier: 1, offset: 0,
+    };
+    const result = vi.fn();
+    scene.throw(hand, result);
+    expect(result).toHaveBeenCalledWith(expect.objectContaining({ status: 'settled' }));
+    expect(state.dice).toHaveLength(5);
+    for (const entry of state.dice) {
+      for (const vertex of entry.polyhedron.vertices) {
+        const point = new THREE.Vector3(...vertex).multiplyScalar(0.58 * entry.die.size)
+          .applyQuaternion(entry.mesh.quaternion).add(entry.mesh.position).project(state.camera);
+        expect(Math.abs(point.x)).toBeLessThan(1);
+        expect(Math.abs(point.y)).toBeLessThan(1);
+      }
+    }
+  });
+
+  it('captures an initial table flick but not gestures while the design table is active', () => {
     const scene = createScene();
     const state = sceneState(scene);
     const canvas = state.renderer.domElement;
     setPointerBounds(canvas);
 
     canvas.dispatchEvent(pointerEvent('pointerdown', 10, 400, 300));
-    expect(canvas.setPointerCapture).not.toHaveBeenCalled();
+    expect(canvas.setPointerCapture).toHaveBeenCalledWith(10);
+    canvas.dispatchEvent(pointerEvent('pointercancel', 10, 400, 300));
+    (canvas.setPointerCapture as ReturnType<typeof vi.fn>).mockClear();
 
     scene.throw(snapshot(createDie('d6')), () => {});
     const entry = state.dice[0];
@@ -917,13 +1061,14 @@ describe('DiceScene pointer workflows', () => {
     expect(result).toMatchObject({ status: 'settled' });
 
     canvas.dispatchEvent(pointerEvent('pointerdown', 21, 0, 0));
-    expect(canvas.setPointerCapture).not.toHaveBeenCalled();
+    expect(canvas.setPointerCapture).toHaveBeenCalledWith(21);
+    canvas.dispatchEvent(pointerEvent('pointercancel', 21, 0, 0));
 
     const body = state.dice[0].body;
     body.wakeUp();
     const awakeCenter = screenCenter(state, canvas);
     canvas.dispatchEvent(pointerEvent('pointerdown', 22, awakeCenter.x, awakeCenter.y));
-    expect(canvas.setPointerCapture).not.toHaveBeenCalled();
+    expect(canvas.setPointerCapture).toHaveBeenCalledWith(22);
   });
 
   it('ignores a pointer hit when the drag ray is parallel to the die plane', () => {
@@ -942,7 +1087,7 @@ describe('DiceScene pointer workflows', () => {
     canvas.dispatchEvent(pointerEvent('pointerdown', 31, 400, 300));
 
     expect(planeIntersection).toHaveBeenCalledOnce();
-    expect(canvas.setPointerCapture).not.toHaveBeenCalled();
+    expect(canvas.setPointerCapture).toHaveBeenCalledWith(31);
     expect(entry.body.sleepState).toBe(CANNON.Body.SLEEPING);
   });
 
@@ -976,6 +1121,7 @@ describe('DiceScene pointer workflows', () => {
     const noHandlerStart = state.dice[0].body.position.clone();
     const noHandlerCenter = screenCenter(state, canvas);
     canvas.dispatchEvent(pointerEvent('pointerdown', 7, noHandlerCenter.x, noHandlerCenter.y));
+    vi.spyOn(state.raycaster.ray, 'intersectPlane').mockReturnValueOnce(null);
     canvas.dispatchEvent(pointerEvent('pointermove', 7, noHandlerCenter.x, -600));
     expect(state.dice[0].body.position.distanceTo(noHandlerStart)).toBeLessThan(1e-8);
     canvas.dispatchEvent(pointerEvent('pointermove', 7, noHandlerCenter.x + 60, noHandlerCenter.y));

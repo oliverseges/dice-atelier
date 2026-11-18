@@ -7,6 +7,7 @@ import {
 
 type SceneResult = { status: 'settled'; results: FaceDefinition[][] } | { status: 'cocked' };
 type ResultCallback = (result: SceneResult) => void;
+type FlickImpulse = { x: number; z: number; spin: number };
 
 const sourceHtml = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
 const bodyMarkup = new DOMParser().parseFromString(sourceHtml, 'text/html').body;
@@ -16,9 +17,10 @@ const sceneHarness: {
   instance: MockScene | null;
   constructorError: unknown;
   throwError: unknown;
-  throwCalls: Array<{ snapshot: HandSnapshot; callback: ResultCallback }>;
+  throwCalls: Array<{ snapshot: HandSnapshot; callback: ResultCallback; impulse?: FlickImpulse }>;
   onDragStart?: () => boolean;
   onDragComplete?: ResultCallback;
+  onTableFlick?: (impulse: FlickImpulse) => void;
 } = {
   instance: null,
   constructorError: null,
@@ -28,14 +30,18 @@ const sceneHarness: {
 
 class MockScene {
   showDie = vi.fn((_die: DieConfig) => {});
+  stageHand = vi.fn((_snapshot: HandSnapshot) => {});
+  setTableFlickCallback = vi.fn((callback: (impulse: FlickImpulse) => void) => {
+    sceneHarness.onTableFlick = callback;
+  });
   setSurface = vi.fn((_surface: 'cloud' | 'table') => {});
   setView = vi.fn((_view: 'play' | 'design') => {});
   setDragCallbacks = vi.fn((onStart: () => boolean, onComplete: ResultCallback) => {
     sceneHarness.onDragStart = onStart;
     sceneHarness.onDragComplete = onComplete;
   });
-  throw = vi.fn((snapshot: HandSnapshot, callback: ResultCallback) => {
-    sceneHarness.throwCalls.push({ snapshot, callback });
+  throw = vi.fn((snapshot: HandSnapshot, callback: ResultCallback, impulse?: FlickImpulse) => {
+    sceneHarness.throwCalls.push({ snapshot, callback, impulse });
     if (sceneHarness.throwError) throw sceneHarness.throwError;
   });
   dispose = vi.fn();
@@ -140,6 +146,7 @@ beforeEach(() => {
   sceneHarness.throwCalls = [];
   sceneHarness.onDragStart = undefined;
   sceneHarness.onDragComplete = undefined;
+  sceneHarness.onTableFlick = undefined;
   document.body.innerHTML = bodyMarkup.innerHTML;
   window.localStorage.clear();
 });
@@ -153,6 +160,205 @@ afterEach(() => {
 });
 
 describe('Dice Atelier main interface', () => {
+  it('keeps play controls compact and optional settings behind design or disclosures', async () => {
+    await boot();
+    expect(element('theme-select').closest('.left-panel')).not.toBeNull();
+    expect(document.querySelectorAll('.surface-switch')).toHaveLength(1);
+    expect(element('.surface-switch').closest('.left-panel')).not.toBeNull();
+    expect(element('hand-multiplier').closest('details')?.open).toBe(false);
+    expect(element('hand-offset').closest('details')?.open).toBe(false);
+    expect(element('add-to-hand').closest('.quick-picker')).not.toBeNull();
+    expect(element('clear-hand').closest('.right-panel')).not.toBeNull();
+    expect(document.querySelector('.topbar select')).toBeNull();
+    click('add-to-hand');
+    expect(element<HTMLDetailsElement>('.group-controls').open).toBe(false);
+  });
+
+  it('previews only in design and stages a detached current hand when returning to play', async () => {
+    await boot();
+    expect(sceneHarness.instance!.showDie).not.toHaveBeenCalled();
+    expect(sceneHarness.instance!.stageHand).not.toHaveBeenCalled();
+    setValue('die-color', '#112233', 'input');
+    setValue('label-style', 'roman');
+    click('new-die');
+    expect(sceneHarness.instance!.showDie).not.toHaveBeenCalled();
+    click('add-to-hand');
+    const staged = sceneHarness.instance!.stageHand.mock.calls.at(-1)![0];
+    expect(staged).toMatchObject({ groups: [{ quantity: 1 }], multiplier: 1, offset: 0 });
+    click('design-toggle');
+    expect(sceneHarness.instance!.showDie).toHaveBeenLastCalledWith(expect.objectContaining({ shape: 'd6' }));
+    const count = sceneHarness.instance!.stageHand.mock.calls.length;
+    setValue('quick-quantity', '2', 'input');
+    click('add-to-hand');
+    expect(sceneHarness.instance!.stageHand.mock.calls).toHaveLength(count);
+    click('close-design');
+    expect(sceneHarness.instance!.stageHand).toHaveBeenLastCalledWith(expect.objectContaining({ groups: [expect.objectContaining({ quantity: 3 })] }));
+    expect(staged.groups[0].quantity).toBe(1);
+    expect(sceneHarness.instance!.showDie).toHaveBeenCalledOnce();
+  });
+
+  it('stages quantity, removal and modifier changes without replacing a rolling hand', async () => {
+    await boot();
+    click('add-to-hand');
+    click('.hand-item [aria-label="Add one D6"]');
+    expect(sceneHarness.instance!.stageHand.mock.calls.at(-1)![0].groups[0].quantity).toBe(2);
+    setValue('hand-multiplier', '4');
+    setValue('hand-offset', '-1');
+    setValue('.group-modifiers select', '2');
+    expect(sceneHarness.instance!.stageHand.mock.calls.at(-1)![0]).toMatchObject({
+      groups: [{ quantity: 2, multiplier: 2 }], multiplier: 4, offset: -1,
+    });
+    click('throw-button');
+    const count = sceneHarness.instance!.stageHand.mock.calls.length;
+    click('.hand-item [aria-label="Remove one D6"]');
+    setValue('hand-offset', '2');
+    click('design-toggle');
+    click('close-design');
+    expect(sceneHarness.instance!.stageHand.mock.calls).toHaveLength(count);
+    expect(sceneHarness.instance!.showDie).not.toHaveBeenCalled();
+    sceneHarness.throwCalls[0].callback({ status: 'cocked' });
+    click('.remove-group');
+    expect(sceneHarness.instance!.stageHand.mock.calls.at(-1)![0].groups).toEqual([]);
+    expect(sceneHarness.onDragStart!()).toBe(false);
+  });
+
+  it('starts the first real throw from a table flick using current modifiers and the supplied impulse', async () => {
+    await boot();
+    const impulse = { x: 2, z: -5, spin: 3 };
+    expect(sceneHarness.onTableFlick).toBeTypeOf('function');
+    sceneHarness.onTableFlick!(impulse);
+    expect(sceneHarness.throwCalls).toHaveLength(0);
+    setValue('quick-quantity', '2', 'input');
+    click('add-to-hand');
+    setValue('hand-multiplier', '2');
+    setValue('hand-offset', '-1');
+    sceneHarness.onTableFlick!(impulse);
+    expect(sceneHarness.throwCalls).toHaveLength(1);
+    const call = sceneHarness.throwCalls[0];
+    expect(call.impulse).toEqual(impulse);
+    expect(call.snapshot).toMatchObject({ groups: [{ quantity: 2 }], multiplier: 2, offset: -1 });
+    sceneHarness.onTableFlick!(impulse);
+    expect(sceneHarness.throwCalls).toHaveLength(1);
+    call.callback({ status: 'settled', results: [[dieResult('Rune', 7), dieResult('Moon', -2)]] });
+    expect(element('.face-pills').textContent).toContain('Rune → 7');
+    expect(element('.total-row strong').textContent).toBe('9');
+    click('throw-button');
+    expect(sceneHarness.throwCalls[1].impulse).toBeUndefined();
+  });
+
+  it('visually quiets results after a delay without hiding scores or keyboard access, and resets on each throw', async () => {
+    vi.useFakeTimers();
+    await boot();
+    const panel = element<HTMLElement>('.result-panel');
+    expect(panel.hidden).toBe(true);
+    click('add-to-hand');
+    click('throw-button');
+    expect(panel.hidden).toBe(false);
+    sceneHarness.throwCalls[0].callback({ status: 'settled', results: [[dieResult('Rune', -2.5)]] });
+    vi.advanceTimersByTime(7000);
+    expect(panel.classList.contains('is-quiet')).toBe(true);
+    expect(panel.hidden).toBe(false);
+    expect(panel.getAttribute('aria-hidden')).not.toBe('true');
+    expect(panel.tabIndex).toBe(0);
+    panel.focus();
+    expect(document.activeElement).toBe(panel);
+    expect(element('.face-pill').textContent).toBe('Rune → -2.5');
+    expect(element('.group-math').textContent).toBe('-2.5 × 1 + 0 = -2.5');
+    click('throw-button');
+    expect(panel.classList.contains('is-quiet')).toBe(false);
+    sceneHarness.throwCalls[1].callback({ status: 'cocked' });
+    vi.advanceTimersByTime(7000);
+    expect(panel.classList.contains('is-quiet')).toBe(true);
+    expect(panel.textContent).toContain('No score was recorded');
+    click('clear-hand');
+    expect(panel.hidden).toBe(true);
+  });
+
+  it('collapses a mixed-hand result to total and outcome chips with the full ledger behind disclosure', async () => {
+    await boot();
+    setValue('quick-die', 'default:d20');
+    setValue('quick-quantity', '3', 'input');
+    click('add-to-hand');
+    setValue('quick-die', 'default:d6');
+    setValue('quick-quantity', '2', 'input');
+    click('add-to-hand');
+    click('throw-button');
+    sceneHarness.throwCalls[0].callback({
+      status: 'settled',
+      results: [[dieResult('Rune', 20), dieResult('VII', 7), dieResult('IV', 4)], [dieResult('Six', 6), dieResult('Two', 2)]],
+    });
+
+    const details = element<HTMLDetailsElement>('result-details');
+    const summary = element('#result-details > summary');
+    expect(details.open).toBe(false);
+    expect(summary.textContent).toContain('Total 39');
+    expect(summary.querySelectorAll('.face-pill')).toHaveLength(5);
+    expect(summary.textContent).toContain('Rune → 20');
+    expect(summary.querySelector('.group-math')).toBeNull();
+    expect(element('result-content').closest('details')).toBe(details);
+    click('#result-details > summary');
+    expect(details.open).toBe(true);
+    expect(element('result-content').textContent).toContain('Faces subtotal 31');
+    expect(element('result-content').textContent).toContain('31 × 1 + 0 = 31');
+    expect(element('.total-row strong').textContent).toBe('39');
+    click('throw-button');
+    expect(details.open).toBe(false);
+    expect(element('result-total').textContent).toBe('Rolling…');
+    expect(element('result-chips').childElementCount).toBe(0);
+    sceneHarness.throwCalls[1].callback({ status: 'cocked' });
+    expect(element('result-total').textContent).toBe('No score');
+    expect(details.open).toBe(false);
+    click('#result-details > summary');
+    expect(element('result-content').textContent).toContain('No score was recorded');
+    sceneHarness.onDragStart!();
+    expect(details.open).toBe(false);
+    expect(element('result-total').textContent).toBe('Rolling…');
+    sceneHarness.onDragComplete!({ status: 'settled', results: [[dieResult('I', 1), dieResult('I', 1), dieResult('I', 1)], [dieResult('I', 1), dieResult('I', 1)]] });
+    expect(element('result-total').textContent).toBe('Total 5');
+  });
+
+  it('fades from settlement time, ignores unrelated controls, and wakes temporarily on pointer, keyboard or touch', async () => {
+    vi.useFakeTimers();
+    await boot();
+    click('add-to-hand');
+    click('throw-button');
+    vi.advanceTimersByTime(10000);
+    sceneHarness.throwCalls[0].callback({ status: 'settled', results: [[dieResult('Ace', 6)]] });
+    const panel = element('results');
+    expect(panel.dataset.state).toBe('active');
+    vi.advanceTimersByTime(6000);
+    setValue('quick-quantity', '2', 'input');
+    setValue('quick-die', 'default:d20');
+    vi.advanceTimersByTime(500);
+    expect(panel.dataset.state).toBe('quiet');
+    expect(panel.classList.contains('is-quiet')).toBe(true);
+    for (const event of ['pointerenter', 'focusin', 'pointerdown', 'click']) {
+      (event === 'click' ? element('#result-details > summary') : panel).dispatchEvent(new Event(event));
+      expect(panel.dataset.state).toBe('active');
+      expect(panel.classList.contains('is-quiet')).toBe(false);
+      vi.advanceTimersByTime(6500);
+      expect(panel.dataset.state).toBe('quiet');
+    }
+    expect(element('result-content').textContent).toContain('Ace → 6');
+    click('clear-hand');
+    vi.advanceTimersByTime(10000);
+    expect(panel.hidden).toBe(true);
+  });
+
+  it('shows a compact failed-throw summary without leaving an old total or expanded ledger', async () => {
+    await boot();
+    click('add-to-hand');
+    click('throw-button');
+    sceneHarness.throwCalls[0].callback({ status: 'settled', results: [[dieResult('Six', 6)]] });
+    click('#result-details > summary');
+    sceneHarness.throwError = new Error('Physics unavailable');
+    click('throw-button');
+    expect(element('result-total').textContent).toBe('Throw failed');
+    expect(element<HTMLDetailsElement>('result-details').open).toBe(false);
+    expect(element('result-chips').childElementCount).toBe(0);
+    expect(element('result-status').textContent).toBe('THROW FAILED');
+  });
+
   it('starts on the default d6 and adds the selected default shape to the hand', async () => {
     await boot();
 
@@ -392,7 +598,7 @@ describe('Dice Atelier main interface', () => {
     expect(element('#stage').classList.contains('surface-table')).toBe(true);
     expect(element('#stage').classList.contains('surface-cloud')).toBe(false);
     expect(tableButtons[0].getAttribute('aria-pressed')).toBe('true');
-    expect(tableButtons[1].getAttribute('aria-pressed')).toBe('false');
+    expect(tableButtons).toHaveLength(1);
     expect([...document.querySelectorAll<HTMLButtonElement>('.surface-button[data-surface="cloud"]')]
       .every(button => button.getAttribute('aria-pressed') === 'false')).toBe(true);
   });
@@ -721,6 +927,7 @@ describe('Dice Atelier main interface', () => {
   it('covers both label preset paths and skips scene redraw while a throw is in progress', async () => {
     const saved = createDie('d6', { id: 'preset-die', name: 'Preset Die' });
     await boot({ collection: savedCollection([saved]) });
+    click('design-toggle');
     element<HTMLButtonElement>('.collection-chip').click();
     const showDieCount = sceneHarness.instance!.showDie.mock.calls.length;
     setValue('label-style', 'roman');
@@ -752,6 +959,7 @@ describe('Dice Atelier main interface', () => {
 
   it('updates and announces transparency, iridescence, and face treatment selections', async () => {
     await boot();
+    click('design-toggle');
     setValue('transparency', '42', 'input');
     setValue('iridescence', '73', 'input');
     setValue('treatment', 'embossed');

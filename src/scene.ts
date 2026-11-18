@@ -1,5 +1,6 @@
 import * as CANNON from 'cannon-es';
 import * as THREE from 'three';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import {
   getPolyhedron, outcomesForShape, restingFaceIndex, type DieConfig, type FaceResult, type HandSnapshot, type Polyhedron,
 } from './model';
@@ -9,15 +10,17 @@ type SceneView = 'play' | 'design';
 type Settled = { status: 'settled'; results: FaceResult[][] } | { status: 'cocked' };
 type DiceEntry = { body: CANNON.Body; mesh: THREE.Group; die: DieConfig; groupIndex: number; dieIndex: number; role: 'single' | 'tens' | 'units'; polyhedron: Polyhedron; calmTime: number };
 type PointedFace = { pointerId: number; entry: DiceEntry; startX: number; startY: number; startedAt: number; startPosition: CANNON.Vec3; plane: THREE.Plane; offset: THREE.Vector3 };
+type ThrowImpulse = { x: number; z: number; spin: number };
 
 function createSurfaceTexture(surface: Surface): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 512;
   const context = canvas.getContext('2d')!;
-  const gradient = context.createLinearGradient(0, 0, 512, 512);
+  const gradient = context.createLinearGradient(0, 0, 0, 512);
   if (surface === 'table') {
-    gradient.addColorStop(0, '#927658');
-    gradient.addColorStop(1, '#5a4737');
+    gradient.addColorStop(0, '#73573e');
+    gradient.addColorStop(0.5, '#695039');
+    gradient.addColorStop(1, '#73573e');
     context.fillStyle = gradient;
     context.fillRect(0, 0, 512, 512);
     context.globalAlpha = 0.16;
@@ -27,7 +30,7 @@ function createSurfaceTexture(surface: Surface): THREE.CanvasTexture {
       context.beginPath();
       const y = i * 3.1;
       context.moveTo(0, y);
-      context.bezierCurveTo(120, y + Math.sin(i) * 15, 320, y - Math.cos(i) * 12, 512, y + Math.sin(i * 2) * 10);
+      context.bezierCurveTo(120, y + Math.sin(i) * 15, 320, y - Math.cos(i) * 12, 512, y);
       context.stroke();
     }
   } else {
@@ -83,9 +86,9 @@ function materialFor(die: DieConfig): THREE.MeshPhysicalMaterial {
   return new THREE.MeshPhysicalMaterial({
     color: die.color,
     metalness: die.material === 'satin' ? 0.82 : die.material === 'enamel' ? 0.32 : 0.06,
-    roughness: die.material === 'satin' ? 0.23 : die.material === 'enamel' ? 0.2 : 0.3,
-    clearcoat: die.material === 'enamel' ? 1 : crystal ? 0.72 : 0.3,
-    clearcoatRoughness: 0.2,
+    roughness: die.material === 'satin' ? 0.23 : die.material === 'enamel' ? 0.2 : 0.24,
+    clearcoat: die.material === 'enamel' ? 1 : crystal ? 0.72 : 0.8,
+    clearcoatRoughness: 0.12,
     transmission: crystal ? 0.19 : 0,
     thickness: crystal ? 0.7 : 0,
     opacity: 1 - die.transparency / 150,
@@ -97,14 +100,16 @@ function materialFor(die: DieConfig): THREE.MeshPhysicalMaterial {
   });
 }
 
-function labelTexture(label: string, treatment: DieConfig['treatment']): THREE.CanvasTexture {
+function labelTexture(label: string, treatment: DieConfig['treatment'], bodyColor: string): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 256;
   const context = canvas.getContext('2d')!;
+  const body = new THREE.Color(bodyColor);
+  const ink = body.r * 0.2126 + body.g * 0.7152 + body.b * 0.0722 < 0.22 ? '#fff1cc' : '#211d17';
   context.clearRect(0, 0, 256, 256);
   context.textAlign = 'center';
   context.textBaseline = 'middle';
-  context.font = `600 ${label.length > 4 ? 58 : 82}px "Iowan Old Style", "Georgia", serif`;
+  context.font = `700 ${Math.min(166, 332 / Math.max(1, label.length))}px "Iowan Old Style", "Georgia", serif`;
   if (treatment === 'engraved') {
     context.shadowColor = '#16120b';
     context.shadowBlur = 5;
@@ -113,7 +118,7 @@ function labelTexture(label: string, treatment: DieConfig['treatment']): THREE.C
     context.fillText(label, 130, 130);
     context.shadowColor = '#fff4d6';
     context.shadowOffsetY = -2;
-    context.fillStyle = '#fff2d6';
+    context.fillStyle = ink;
     context.fillText(label, 128, 127);
   } else if (treatment === 'embossed') {
     context.shadowColor = '#fff4d6';
@@ -123,16 +128,16 @@ function labelTexture(label: string, treatment: DieConfig['treatment']): THREE.C
     context.fillText(label, 128, 126);
     context.shadowColor = '#5c4829';
     context.shadowOffsetY = 3;
-    context.fillStyle = '#785c31';
+    context.fillStyle = ink;
     context.fillText(label, 127, 128);
   } else {
     context.shadowColor = '#1c1509';
     context.shadowBlur = 2;
     context.shadowOffsetY = 2;
-    context.lineWidth = 2;
-    context.strokeStyle = '#43351e';
+    context.lineWidth = 7;
+    context.strokeStyle = '#241a0b';
     context.strokeText(label, 128, 128);
-    context.fillStyle = '#f2d89c';
+    context.fillStyle = ink;
     context.fillText(label, 128, 128);
   }
   const texture = new THREE.CanvasTexture(canvas);
@@ -142,10 +147,10 @@ function labelTexture(label: string, treatment: DieConfig['treatment']): THREE.C
 
 function makeDieMesh(die: DieConfig, polyhedron: Polyhedron, labelOverride?: (faceIndex: number) => string): THREE.Group {
   const group = new THREE.Group();
-  const positions: number[] = [];
+  const bevelPoints: THREE.Vector3[] = [];
   const material = materialFor(die);
   const addBadge = (label: string, position: THREE.Vector3, normal: THREE.Vector3, size: number) => {
-    const texture = labelTexture(label, die.treatment);
+    const texture = labelTexture(label, die.treatment, die.color);
     const relief = new THREE.CanvasTexture(texture.image as HTMLCanvasElement);
     relief.colorSpace = THREE.NoColorSpace;
     const gilded = die.treatment === 'gilded';
@@ -156,7 +161,7 @@ function makeDieMesh(die: DieConfig, polyhedron: Polyhedron, labelOverride?: (fa
         bumpMap: relief,
         bumpScale: die.treatment === 'engraved' ? -0.025 : die.treatment === 'embossed' ? 0.025 : 0.012,
         color: '#ffffff',
-        metalness: gilded ? 0.66 : 0.08,
+        metalness: gilded ? 0.45 : 0.08,
         roughness: gilded ? 0.26 : 0.48,
         transparent: true,
         depthWrite: false,
@@ -171,10 +176,8 @@ function makeDieMesh(die: DieConfig, polyhedron: Polyhedron, labelOverride?: (fa
   };
   polyhedron.faces.forEach((face, faceIndex) => {
     const points = face.map(index => new THREE.Vector3(...polyhedron.vertices[index]).multiplyScalar(0.58 * die.size));
-    for (let index = 1; index < points.length - 1; index++) {
-      positions.push(...points[0].toArray(), ...points[index].toArray(), ...points[index + 1].toArray());
-    }
     const center = points.reduce((sum, point) => sum.add(point), new THREE.Vector3()).multiplyScalar(1 / points.length);
+    bevelPoints.push(...points.map(point => point.clone().lerp(center, 0.085)));
     const normal = new THREE.Vector3().crossVectors(points[1].clone().sub(points[0]), points[2].clone().sub(points[0])).normalize();
     if (normal.dot(center) < 0) normal.negate();
     if (die.shape === 'd4' && !labelOverride) {
@@ -186,12 +189,14 @@ function makeDieMesh(die: DieConfig, polyhedron: Polyhedron, labelOverride?: (fa
       }
     } else {
       const label = labelOverride ? labelOverride(faceIndex) : die.faces[faceIndex % die.faces.length]?.label ?? '';
-      addBadge(label, center, normal, 0.36);
+      const faceRadius = Math.min(...points.map((point, index) => {
+        const edge = points[(index + 1) % points.length].clone().sub(point);
+        return new THREE.Vector3().crossVectors(center.clone().sub(point), edge).length() / edge.length();
+      }));
+      addBadge(label, center, normal, faceRadius * 1.65 / die.size);
     }
   });
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.computeVertexNormals();
+  const geometry = new ConvexGeometry(bevelPoints);
   const shell = new THREE.Mesh(geometry, material);
   shell.castShadow = true;
   shell.receiveShadow = true;
@@ -251,11 +256,16 @@ export class DiceScene {
   private elapsed = 0;
   private settledCallback: ((result: Settled) => void) | null = null;
   private finished = false;
+  private staged = false;
   private disposed = false;
   private activeGroupCount = 0;
   private readonly reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   private onDragStart: (() => boolean) | null = null;
   private onDragComplete: ((result: Settled) => void) | null = null;
+  private onTableFlick: ((impulse: ThrowImpulse) => void) | null = null;
+  private tableGesture: { pointerId: number; x: number; y: number; time: number } | null = null;
+  private readonly environmentTarget: THREE.WebGLRenderTarget;
+  private readonly handleWindowResize = () => this.resize();
   private readonly handlePointerDown = (event: PointerEvent) => this.pointerDown(event);
   private readonly handlePointerMove = (event: PointerEvent) => this.pointerMove(event);
   private readonly handlePointerUp = (event: PointerEvent) => this.pointerUp(event);
@@ -273,12 +283,18 @@ export class DiceScene {
     this.renderer.domElement.setAttribute('aria-hidden', 'true');
     this.renderer.domElement.className = 'dice-canvas';
     this.renderer.domElement.style.touchAction = 'none';
+    Object.assign(this.renderer.domElement.style, { position: 'fixed', inset: '0', width: '100vw', height: '100dvh' });
     this.renderer.domElement.addEventListener('pointerdown', this.handlePointerDown);
     this.renderer.domElement.addEventListener('pointermove', this.handlePointerMove);
     this.renderer.domElement.addEventListener('pointerup', this.handlePointerUp);
     this.renderer.domElement.addEventListener('pointercancel', this.handlePointerCancel);
     host.prepend(this.renderer.domElement);
-    this.scene.environment = createEnvironment();
+    const environment = createEnvironment();
+    const generator = new THREE.PMREMGenerator(this.renderer);
+    this.environmentTarget = generator.fromEquirectangular(environment);
+    this.scene.environment = this.environmentTarget.texture;
+    environment.dispose();
+    generator.dispose();
     this.scene.background = new THREE.Color('#d7d0c3');
     this.scene.add(new THREE.HemisphereLight(0xfff5e5, 0x625546, 2.05));
     const key = new THREE.DirectionalLight(0xffe0b0, 4.2);
@@ -305,6 +321,7 @@ export class DiceScene {
     this.createDesignTable();
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(host);
+    window.addEventListener('resize', this.handleWindowResize);
     this.resize();
     this.render();
   }
@@ -320,7 +337,7 @@ export class DiceScene {
       (mesh.material as THREE.Material).dispose();
     }
     const plane = new THREE.Mesh(
-      new THREE.PlaneGeometry(18, 18),
+      new THREE.PlaneGeometry(200, 200),
       new THREE.MeshStandardMaterial({
         map: createSurfaceTexture(surface),
         roughness: surface === 'cloud' ? 0.86 : 0.72,
@@ -392,20 +409,25 @@ export class DiceScene {
     this.onDragComplete = onComplete;
   }
 
+  setTableFlickCallback(callback: (impulse: ThrowImpulse) => void): void {
+    this.onTableFlick = callback;
+  }
+
   setView(view: SceneView): void {
     if (this.view === view) return;
     this.view = view;
+    this.frameCamera();
     this.designTable.visible = view === 'design';
     if (view === 'design' && !this.previewDie && this.previewConfig) this.createPreview();
-    if (view === 'play' && this.previewDie && (this.world || this.dice.length)) this.clearPreview();
+    if (view === 'play' && this.previewDie) this.clearPreview();
     if (this.previewDie) this.positionPreview(this.previewDie);
     cancelAnimationFrame(this.cameraFrame);
     const startPosition = this.camera.position.clone();
     const startTarget = this.cameraTarget.clone();
     const mobile = this.host.clientWidth < 520;
-    const targetX = view === 'design' ? (mobile ? -12.5 : -10.5) : (mobile ? 1.1 : 0);
-    const endTarget = new THREE.Vector3(targetX, mobile ? -2.5 : 0, 0);
-    const endPosition = new THREE.Vector3(targetX, mobile ? 11.5 : 7, mobile ? 10.8 : 7);
+    const targetX = view === 'design' ? (mobile ? -12.5 : -10.5) : 0;
+    const endTarget = new THREE.Vector3(targetX, 0, 0);
+    const endPosition = new THREE.Vector3(targetX, mobile ? 11.5 : 9, mobile ? 10.8 : 7);
     if (this.reduceMotion) {
       this.camera.position.copy(endPosition);
       this.cameraTarget.copy(endTarget);
@@ -435,13 +457,29 @@ export class DiceScene {
     cancelAnimationFrame(this.cameraFrame);
     this.cameraFrame = 0;
     const mobile = width < 520;
-    const targetX = this.view === 'design' ? (mobile ? -12.5 : -10.5) : (mobile ? 1.1 : 0);
-    this.cameraTarget.set(targetX, mobile ? -2.5 : 0, 0);
-    this.camera.position.set(targetX, mobile ? 11.5 : 7, mobile ? 10.8 : 7);
+    const targetX = this.view === 'design' ? (mobile ? -12.5 : -10.5) : 0;
+    this.cameraTarget.set(targetX, 0, 0);
+    this.camera.position.set(targetX, mobile ? 11.5 : 9, mobile ? 10.8 : 7);
     this.camera.lookAt(this.cameraTarget);
     this.camera.updateProjectionMatrix();
+    this.frameCamera();
     if (this.previewDie) this.positionPreview(this.previewDie);
     this.render();
+  }
+
+  private frameCamera(): void {
+    const width = Math.max(1, this.host.clientWidth);
+    const height = Math.max(1, this.host.clientHeight);
+    if (this.view === 'design') {
+      this.camera.clearViewOffset();
+      this.camera.aspect = width / height;
+      this.camera.updateProjectionMatrix();
+      return;
+    }
+    const mobile = width < 520;
+    const playWidth = mobile ? width : Math.max(1, width - 310);
+    const playHeight = mobile ? Math.max(1, height - 370) : height;
+    this.camera.setViewOffset(playWidth, playHeight, 0, mobile ? -55 : 0, width, height);
   }
 
   showDie(die: DieConfig): void {
@@ -452,11 +490,34 @@ export class DiceScene {
     this.render();
   }
 
-  throw(snapshot: HandSnapshot, callback: (result: Settled) => void): void {
+  stageHand(snapshot: HandSnapshot): void {
+    this.prepareHand(snapshot);
+    this.simulateWithoutAnimation(this.world!);
+    this.staged = true;
+  }
+
+  throw(snapshot: HandSnapshot, callback: (result: Settled) => void, impulse?: ThrowImpulse): void {
+    this.prepareHand(snapshot);
+    this.settledCallback = callback;
+    if (impulse) {
+      for (const entry of this.dice) {
+        entry.body.velocity.set(impulse.x, 3.2, impulse.z);
+        entry.body.angularVelocity.set(impulse.z * 2, impulse.spin, -impulse.x * 2);
+      }
+    }
+    if (this.reduceMotion) {
+      this.simulateWithoutAnimation(this.world!);
+      return;
+    }
+    this.animationFrame = requestAnimationFrame(time => this.animate(time));
+  }
+
+  private prepareHand(snapshot: HandSnapshot): void {
     this.clearDynamic();
     this.clearPreview();
-    this.settledCallback = callback;
+    this.settledCallback = null;
     this.finished = false;
+    this.staged = false;
     this.activeGroupCount = snapshot.groups.length;
     this.elapsed = 0;
     this.previousTime = 0;
@@ -470,15 +531,16 @@ export class DiceScene {
     const floor = new CANNON.Body({ mass: 0, shape: new CANNON.Plane() });
     floor.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
     world.addBody(floor);
-    this.addWall(world, 0, -5, 0.4, 0.3, 10.5);
-    this.addWall(world, 0, 5, 0.4, 0.3, 10.5);
-    this.addWall(world, -5, 0, 10.5, 0.3, 0.4);
-    this.addWall(world, 5, 0, 10.5, 0.3, 0.4);
+    const halfWidth = this.host.clientWidth < 520 ? 2.3 : 3.8;
+    this.addWall(world, 0, -2.9, halfWidth * 2 + 1, 8, 0.3);
+    this.addWall(world, 0, 2.9, halfWidth * 2 + 1, 8, 0.3);
+    this.addWall(world, -halfWidth, 0, 0.3, 8, 6);
+    this.addWall(world, halfWidth, 0, 0.3, 8, 6);
     this.world = world;
     this.dice.length = 0;
     const totalBodies = snapshot.groups.reduce((sum, group) => sum + group.quantity * (group.die.shape === 'd100' ? 2 : 1), 0);
-    const columns = Math.min(5, Math.max(1, Math.ceil(Math.sqrt(totalBodies))));
-    const rows = Math.ceil(totalBodies / columns);
+    const columns = Math.min(this.host.clientWidth < 520 ? 2 : 5, Math.max(1, Math.ceil(Math.sqrt(totalBodies))));
+    const rows = Math.min(4, Math.ceil(totalBodies / columns));
 
     let order = 0;
     snapshot.groups.forEach((group, groupIndex) => {
@@ -491,11 +553,6 @@ export class DiceScene {
         }
       }
     });
-    if (this.reduceMotion) {
-      this.simulateWithoutAnimation(world);
-      return;
-    }
-    this.animationFrame = requestAnimationFrame(time => this.animate(time));
   }
 
   private simulateWithoutAnimation(world: CANNON.World): void {
@@ -539,7 +596,7 @@ export class DiceScene {
       ? (index: number) => String((index % 10) * 10).padStart(2, '0')
       : role === 'units'
         ? (index: number) => String(index % 10)
-        : (index: number) => die.faces[index % die.faces.length]?.label ?? '';
+        : undefined;
     const mesh = makeDieMesh(die, polyhedron, display);
     const body = new CANNON.Body({
       mass: 1,
@@ -550,13 +607,13 @@ export class DiceScene {
       linearDamping: this.surface === 'table' ? 0.19 : 0.24,
       angularDamping: 0.27,
     });
-    const row = Math.floor(order / columns);
+    const row = Math.floor(order / columns) % rows;
     const column = order % columns;
-    const bodiesInRow = Math.min(columns, totalBodies - row * columns);
-    const spacing = 1.58;
+    const bodiesInRow = Math.min(columns, totalBodies - Math.floor(order / columns) * columns);
+    const spacing = 1.32;
     const x = (column - (bodiesInRow - 1) / 2) * spacing + (Math.random() - 0.5) * 0.08;
     const z = (row - (rows - 1) / 2) * spacing + (Math.random() - 0.5) * 0.08;
-    body.position.set(x, 2.3 + Math.random() * 1.2 + row * 0.12, z);
+    body.position.set(x, 2.3 + Math.random() * 1.2 + Math.floor(order / (columns * rows)) * 1.6, z);
     body.velocity.set((Math.random() - 0.5) * 4.4, -0.6, (Math.random() - 0.5) * 4.4);
     body.angularVelocity.set((Math.random() - 0.5) * 13, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 13);
     world.addBody(body);
@@ -576,7 +633,10 @@ export class DiceScene {
   }
 
   private pointerDown(event: PointerEvent): void {
-    if (this.view !== 'play' || !this.finished || !this.world || this.pointedFace) return;
+    if (this.view !== 'play' || this.pointedFace || this.tableGesture || (!this.finished && this.world)) return;
+    this.tableGesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, time: performance.now() };
+    this.renderer.domElement.setPointerCapture(event.pointerId);
+    if (!this.world || this.staged) return;
     this.updatePointer(event);
     const hit = this.raycaster.intersectObjects(this.dice.map(entry => entry.mesh), true)[0];
     if (!hit) return;
@@ -597,6 +657,7 @@ export class DiceScene {
       plane,
       offset,
     };
+    this.tableGesture = null;
     entry.body.wakeUp();
     entry.body.velocity.setZero();
     entry.body.angularVelocity.setZero();
@@ -612,9 +673,9 @@ export class DiceScene {
     if (!point) return;
     point.add(drag.offset);
     drag.entry.body.position.set(
-      THREE.MathUtils.clamp(point.x, -4.4, 4.4),
+      THREE.MathUtils.clamp(point.x, -2.05, 2.05),
       Math.max(0.35, point.y),
-      THREE.MathUtils.clamp(point.z, -4.4, 4.4),
+      THREE.MathUtils.clamp(point.z, -2.05, 2.05),
     );
     drag.entry.body.velocity.setZero();
     drag.entry.body.angularVelocity.setZero();
@@ -625,6 +686,18 @@ export class DiceScene {
   }
 
   private pointerUp(event: PointerEvent): void {
+    const gesture = this.tableGesture;
+    if (gesture && gesture.pointerId === event.pointerId) {
+      this.tableGesture = null;
+      if (this.renderer.domElement.hasPointerCapture(event.pointerId)) this.renderer.domElement.releasePointerCapture(event.pointerId);
+      const dx = event.clientX - gesture.x;
+      const dy = event.clientY - gesture.y;
+      if (Math.hypot(dx, dy) >= 12) {
+        const duration = Math.max(0.08, (performance.now() - gesture.time) / 1000);
+        this.onTableFlick?.({ x: THREE.MathUtils.clamp(dx / duration / 180, -6, 6), z: THREE.MathUtils.clamp(dy / duration / 180, -6, 6), spin: THREE.MathUtils.clamp((dx - dy) / 60, -12, 12) });
+      }
+      return;
+    }
     const drag = this.pointedFace;
     if (!drag || drag.pointerId !== event.pointerId) return;
     this.pointedFace = null;
@@ -656,6 +729,10 @@ export class DiceScene {
   }
 
   private pointerCancel(event: PointerEvent): void {
+    if (this.tableGesture?.pointerId === event.pointerId) {
+      this.tableGesture = null;
+      if (this.renderer.domElement.hasPointerCapture(event.pointerId)) this.renderer.domElement.releasePointerCapture(event.pointerId);
+    }
     const drag = this.pointedFace;
     if (!drag || drag.pointerId !== event.pointerId) return;
     this.pointedFace = null;
@@ -767,6 +844,7 @@ export class DiceScene {
     cancelAnimationFrame(this.animationFrame);
     this.world = null;
     this.pointedFace = null;
+    this.tableGesture = null;
     this.settledCallback = null;
     this.dice.length = 0;
     for (const object of this.dynamicObjects) {
@@ -788,6 +866,7 @@ export class DiceScene {
     this.renderer.domElement.removeEventListener('pointerup', this.handlePointerUp);
     this.renderer.domElement.removeEventListener('pointercancel', this.handlePointerCancel);
     this.resizeObserver.disconnect();
+    window.removeEventListener('resize', this.handleWindowResize);
     this.clearDynamic();
     this.clearPreview();
     this.scene.traverse(object => {
@@ -799,7 +878,7 @@ export class DiceScene {
         material.dispose();
       }
     });
-    this.scene.environment?.dispose();
+    this.environmentTarget.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
