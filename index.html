@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f2eb" />
+    <meta name="description" content="A beautiful local-first 3D dice workshop and physics playground." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Dice Atelier — Roll your own story</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Dice Atelier home">
+          <span class="brand-mark" aria-hidden="true">✳</span>
+          <span><strong>DICE ATELIER</strong><small>ROLL YOUR OWN STORY</small></span>
+        </a>
+        <div class="topbar-actions">
+          <span class="saved-note"><span class="status-dot"></span> YOUR COLLECTION, LOCALLY SAVED</span>
+          <label class="theme-select-label" for="theme-select">Atelier</label>
+          <select id="theme-select" aria-label="Choose interface theme">
+            <option value="ivory">Ivory &amp; brass</option>
+            <option value="gaming">Studio color</option>
+            <option value="fantasy">Forest atelier</option>
+          </select>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="left-panel panel" aria-label="Dice workshop">
+          <div class="panel-heading">
+            <div><p class="eyebrow">THE DESIGN TABLE</p><h1>Make it yours.</h1></div>
+            <div class="design-heading-actions">
+              <button id="new-die" class="icon-button" title="Start a new die" aria-label="Start a new die">＋</button>
+              <button id="close-design" class="icon-button close-design" title="Return to the throw table" aria-label="Return to the throw table">›</button>
+            </div>
+          </div>
+          <section class="library-section">
+            <div class="section-label"><span>YOUR DICE</span><span id="collection-count">0 PIECES</span></div>
+            <div id="collection" class="collection" aria-label="Saved dice"></div>
+          </section>
+          <section class="editor-section">
+            <div class="section-label"><span>SHAPE</span><span class="tiny-note">THE CANVAS</span></div>
+            <div class="shape-grid" id="shape-grid" aria-label="Choose die shape"></div>
+            <button id="more-shapes" class="more-shapes" aria-expanded="false">More shapes <span>＋</span></button>
+          </section>
+          <section class="editor-section identity-section">
+            <div class="section-label"><span>IDENTITY</span><span class="tiny-note">01 / PERSONAL</span></div>
+            <label class="field-label" for="die-name">A name for your die</label>
+            <input id="die-name" maxlength="32" autocomplete="off" placeholder="e.g. The Lucky One" />
+            <div class="field-row">
+              <label class="field-label" for="die-color">Color <input id="die-color" type="color" value="#c6a86a" aria-label="Choose die color" /></label>
+              <label class="field-label" for="die-material">Body material
+                <select id="die-material">
+                  <option value="porcelain">Porcelain</option>
+                  <option value="satin">Satin metal</option>
+                  <option value="crystal">Crystal</option>
+                  <option value="enamel">Enamel</option>
+                </select>
+              </label>
+            </div>
+            <label class="range-field size-field" for="die-size">Die size <output id="size-output">100%</output><input id="die-size" type="range" min="60" max="140" step="5" value="100" /></label>
+            <details class="advanced-controls">
+              <summary>Finish &amp; light <span>ADVANCED</span></summary>
+              <label class="range-field">Transparency <output id="transparency-output">0%</output><input id="transparency" type="range" min="0" max="65" value="0" /></label>
+              <label class="range-field">Iridescence <output id="iridescence-output">25%</output><input id="iridescence" type="range" min="0" max="100" value="25" /></label>
+              <label class="field-label" for="treatment">Face treatment
+                <select id="treatment">
+                  <option value="gilded">Gilded · warm inlay</option>
+                  <option value="engraved">Engraved · shadow relief</option>
+                  <option value="embossed">Embossed · raised relief</option>
+                </select>
+              </label>
+            </details>
+          </section>
+          <section class="editor-section face-section">
+            <div class="section-label"><span>FACE LANGUAGE</span><span class="tiny-note">LABEL ≠ SCORE</span></div>
+            <label class="field-label" for="label-style">Label preset</label>
+            <select id="label-style">
+              <option value="arabic">Arabic numerals</option>
+              <option value="roman">Roman numerals</option>
+              <option value="custom">Custom face labels</option>
+            </select>
+            <details id="custom-faces" class="advanced-controls custom-faces">
+              <summary>Customize every face <span>LABEL + SCORE</span></summary>
+              <p class="helper-text">One face per line: display label, then its independent numeric score.</p>
+              <textarea id="face-map" rows="5" spellcheck="false" aria-label="Face labels and numeric scores"></textarea>
+              <button id="apply-face-map" class="text-button">Apply face language</button>
+            </details>
+          </section>
+          <div class="editor-actions">
+            <button id="save-die" class="primary-button">Save to collection <span>↗</span></button>
+            <button id="delete-die" class="delete-button" hidden>Delete this die</button>
+          </div>
+          <p id="storage-warning" class="warning-message" role="status" hidden></p>
+        </aside>
+
+        <section class="stage-column" aria-label="Dice table">
+          <button id="design-toggle" class="view-toggle" aria-label="Move left to the design table"><span aria-hidden="true">‹</span><small>DESIGN</small></button>
+          <div class="stage-toolbar">
+            <div class="stage-title"><span class="eyebrow">THE TABLE</span><strong id="stage-caption">Your next story starts here.</strong></div>
+            <div class="surface-switch" role="group" aria-label="Throwing surface">
+              <button class="surface-button active" data-surface="cloud" aria-pressed="true">Cloud</button>
+              <button class="surface-button" data-surface="table" aria-pressed="false">Table</button>
+            </div>
+          </div>
+          <div id="stage" class="stage surface-cloud">
+            <div id="scene-fallback" class="scene-fallback" hidden>
+              <span class="fallback-mark">✳</span><strong>A little quiet on this device.</strong><span>3D rendering is unavailable, but your dice and saved collection are safe.</span>
+            </div>
+            <div class="stage-caption" aria-hidden="true"><span>ATELIER NO. 01</span><span>✦ &nbsp; A GOOD ROLL IS A SMALL ADVENTURE</span></div>
+            <div id="roll-overlay" class="roll-overlay" hidden><span class="roll-spinner"></span><span id="roll-status">The dice are finding their feet…</span></div>
+          </div>
+          <div class="stage-bottom">
+            <span id="hand-summary">Your hand is waiting for its first die.</span>
+            <button id="clear-hand" class="text-button" disabled>Clear hand</button>
+          </div>
+          <section class="result-panel" aria-live="polite" aria-atomic="false">
+            <div class="result-heading"><div><p class="eyebrow">THE LAST THROW</p><h2 id="result-title">A moment before the roll</h2></div><span id="result-status" class="result-status">READY WHEN YOU ARE</span></div>
+            <div id="result-content" class="result-content"><span class="empty-result">Add a die to your hand, then let the table decide.</span></div>
+          </section>
+        </section>
+
+        <aside class="right-panel panel" aria-label="Your hand">
+          <div class="panel-heading hand-heading"><div><p class="eyebrow">THE NEXT THROW</p><h2>Make a hand.</h2></div><span id="hand-count" class="hand-count">0 / 30</span></div>
+          <div class="quick-picker">
+            <label class="field-label" for="quick-die">Choose a die</label>
+            <select id="quick-die" aria-label="Choose a die for your hand">
+              <optgroup label="Classic dice">
+                <option value="default:d4">d4 · tetrahedron</option>
+                <option value="default:d6" selected>d6 · cube</option>
+                <option value="default:d8">d8 · octahedron</option>
+                <option value="default:d10">d10 · ten faces</option>
+                <option value="default:d12">d12 · dodecahedron</option>
+                <option value="default:d20">d20 · icosahedron</option>
+                <option value="default:d100">d100 · percentile</option>
+              </optgroup>
+              <optgroup label="More shapes">
+                <option value="default:d2">d2</option>
+                <option value="default:d3">d3</option>
+                <option value="default:d5">d5</option>
+                <option value="default:d7">d7</option>
+                <option value="default:d14">d14</option>
+                <option value="default:d16">d16</option>
+                <option value="default:d24">d24</option>
+                <option value="default:d30">d30</option>
+              </optgroup>
+              <optgroup id="saved-die-options" label="Your saved dice"></optgroup>
+            </select>
+            <div class="quick-add-row">
+              <label class="field-label" for="quick-quantity">Quantity</label>
+              <input id="quick-quantity" type="number" min="1" max="30" value="1" />
+            </div>
+          </div>
+          <div id="hand-list" class="hand-list"></div>
+          <button id="add-to-hand" class="secondary-button"><span>＋</span> Add to hand</button>
+          <div class="surface-switch floating-surface-switch" role="group" aria-label="Throwing surface">
+            <button class="surface-button active" data-surface="cloud" aria-pressed="true">Cloud</button>
+            <button class="surface-button" data-surface="table" aria-pressed="false">Table</button>
+          </div>
+          <div class="modifier-card">
+            <div class="section-label"><span>HAND MODIFIER</span><span class="tiny-note">AFTER GROUPS</span></div>
+            <div class="modifier-row"><label for="hand-multiplier">Multiply</label><select id="hand-multiplier"><option value="1">× 1</option><option value="2">× 2</option><option value="4">× 4</option></select></div>
+            <div class="modifier-row"><label for="hand-offset">Then add</label><select id="hand-offset"><option value="0">+ 0</option><option value="2">+ 2</option><option value="-1">− 1</option></select></div>
+          </div>
+          <div class="formula-card"><span class="formula-icon">ƒ</span><p><strong>Every group tells its own story.</strong> Multiply a group's subtotal, add its offset once, then apply your hand modifier.</p></div>
+          <button id="throw-button" class="throw-button" disabled><span>Throw the hand</span><span class="throw-arrow">↗</span></button>
+          <p class="physics-note"><span>◉</span> Results come from the resting faces. After a throw, drag a die to flick it again.</p>
+          <details class="about-note"><summary>How the oddities roll</summary><p>d24 and d30 use 12- and 15-sided bipyramids; smaller oddities repeat outcomes on convex solids. d100 rolls two physical d10s. See the README for representation and fairness notes.</p></details>
+        </aside>
+      </main>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
