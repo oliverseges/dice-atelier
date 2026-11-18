@@ -501,8 +501,8 @@ export class DiceScene {
     this.settledCallback = callback;
     if (impulse) {
       for (const entry of this.dice) {
-        entry.body.velocity.set(impulse.x, 3.2, impulse.z);
-        entry.body.angularVelocity.set(impulse.z * 2, impulse.spin, -impulse.x * 2);
+        entry.body.velocity.set(entry.body.velocity.x + impulse.x, 3.2, entry.body.velocity.z + impulse.z);
+        entry.body.angularVelocity.set(entry.body.angularVelocity.x + impulse.z * 2, entry.body.angularVelocity.y + impulse.spin, entry.body.angularVelocity.z - impulse.x * 2);
       }
     }
     if (this.reduceMotion) {

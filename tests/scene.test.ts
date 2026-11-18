@@ -974,12 +974,20 @@ describe('DiceScene pointer workflows', () => {
     canvas.dispatchEvent(pointerEvent('pointerup', 1, center.x + 100, center.y - 100));
     expect(flick).toHaveBeenCalledOnce();
     const result = vi.fn();
+    useDeterministicRandom();
+    scene.throw(hand, result);
+    const velocities = state.dice.map(entry => ({
+      linear: entry.body.velocity.clone(), angular: entry.body.angularVelocity.clone(),
+    }));
+    useDeterministicRandom();
     scene.throw(hand, result, { x: 2, z: -3, spin: 5 });
     expect(state.dice).toHaveLength(5);
-    for (const entry of state.dice) {
-      expect(entry.body.velocity.toArray()).toEqual([2, 3.2, -3]);
-      expect(entry.body.angularVelocity.toArray()).toEqual([-6, 5, -4]);
-    }
+    state.dice.forEach((entry, index) => {
+      expect(entry.body.velocity.toArray()).toEqual([velocities[index].linear.x + 2, 3.2, velocities[index].linear.z - 3]);
+      expect(entry.body.angularVelocity.toArray()).toEqual([
+        velocities[index].angular.x - 6, velocities[index].angular.y + 5, velocities[index].angular.z - 4,
+      ]);
+    });
     expect(result).not.toHaveBeenCalled();
   });
 
